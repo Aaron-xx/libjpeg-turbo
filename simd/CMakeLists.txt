@@ -429,7 +429,19 @@ check_c_source_compiles("
 
 unset(CMAKE_REQUIRED_FLAGS)
 
-if(NOT HAVE_DSPR2)
+set(CMAKE_REQUIRED_FLAGS -mmsa)
+
+check_c_source_compiles("
+#include <msa.h>
+int main (void) {
+  v8i16 a0 = {0}, a1 = {0};
+  a0 = a0 + a1;
+  return 0;
+}" HAVE_MSA)
+
+unset(CMAKE_REQUIRED_FLAGS)
+
+if(NOT HAVE_DSPR2 AND NOT HAVE_MSA)
   simd_fail("SIMD extensions not available for this CPU")
   return()
 endif()
@@ -463,8 +475,20 @@ check_c_source_compiles("
   }" HAVE_MMI)
 
 unset(CMAKE_REQUIRED_FLAGS)
+ 
+set(CMAKE_REQUIRED_FLAGS -mmsa)
 
-if(NOT HAVE_MMI)
+check_c_source_compiles("
+#include <msa.h>
+int main (void) {
+  v8i16 a0 = {0}, a1 = {0};
+  a0 = a0 + a1;
+  return 0;
+}" HAVE_MSA)
+
+unset(CMAKE_REQUIRED_FLAGS)
+
+if(NOT HAVE_MMI AND NOT HAVE_MSA)
   simd_fail("SIMD extensions not available for this CPU")
   return()
 endif()
