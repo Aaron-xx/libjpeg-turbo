@@ -27,7 +27,10 @@
 
 static THREAD_LOCAL unsigned int simd_support = ~0;
 
-#if !(defined(__mips_dsp) && (__mips_dsp_rev >= 2)) && defined(__linux__)
+#define have_dspr2(flags) (flags & JSIMD_DSPR2)
+#define have_msa(flags) (flags & JSIMD_MSA)
+
+#if !(defined(__mips_dsp) && (__mips_dsp_rev >= 2)) && !defined(__mips_msa) && defined(__linux__)
 
 LOCAL(void)
 parse_proc_cpuinfo(const char *search_string)
@@ -42,7 +45,10 @@ parse_proc_cpuinfo(const char *search_string)
     while (fgets(cpuinfo_line, sizeof(cpuinfo_line), f) != NULL) {
       if (strstr(cpuinfo_line, search_string) != NULL) {
         fclose(f);
-        simd_support |= JSIMD_DSPR2;
+	if(!strcmp(search_string, "dsp2"))
+          simd_support |= JSIMD_DSPR2;
+	if(!strcmp(search_string, "msa"))
+          simd_support |= JSIMD_MSA;
         return;
       }
     }
@@ -70,11 +76,14 @@ init_simd(void)
 
 #if defined(__mips_dsp) && (__mips_dsp_rev >= 2)
   simd_support |= JSIMD_DSPR2;
+#elif defined(__mips_msa)
+  simd_support |= JSIMD_MSA;
 #elif defined(__linux__)
-  /* We still have a chance to use MIPS DSPR2 regardless of globally used
-   * -mdspr2 options passed to gcc by performing runtime detection via
+  /* We still have a chance to use MIPS DSPR2 and MIPS_MSA regardless of globally used
+   * -mdspr2 and -mmsa options passed to gcc by performing runtime detection via
    * /proc/cpuinfo parsing on linux */
-  parse_proc_cpuinfo("MIPS 74K");
+  parse_proc_cpuinfo("dsp2");
+  parse_proc_cpuinfo("msa");
 #endif
 
 #ifndef NO_GETENV
@@ -82,6 +91,9 @@ init_simd(void)
   env = getenv("JSIMD_FORCEDSPR2");
   if ((env != NULL) && (strcmp(env, "1") == 0))
     simd_support = JSIMD_DSPR2;
+  env = getenv("JSIMD_FORCEMSA");
+  if ((env != NULL) && (strcmp(env, "1") == 0))
+    simd_support = JSIMD_MSA;
   env = getenv("JSIMD_FORCENONE");
   if ((env != NULL) && (strcmp(env, "1") == 0))
     simd_support = 0;
@@ -126,7 +138,7 @@ jsimd_can_rgb_ycc(void)
   if ((RGB_PIXELSIZE != 3) && (RGB_PIXELSIZE != 4))
     return 0;
 
-  if (simd_support & JSIMD_DSPR2)
+  if (have_dspr2(simd_support) || have_msa(simd_support))
     return 1;
 
   return 0;
@@ -145,7 +157,7 @@ jsimd_can_rgb_gray(void)
   if ((RGB_PIXELSIZE != 3) && (RGB_PIXELSIZE != 4))
     return 0;
 
-  if (simd_support & JSIMD_DSPR2)
+  if (have_dspr2(simd_support) || have_msa(simd_support))
     return 1;
 
   return 0;
@@ -164,7 +176,7 @@ jsimd_can_ycc_rgb(void)
   if ((RGB_PIXELSIZE != 3) && (RGB_PIXELSIZE != 4))
     return 0;
 
-  if (simd_support & JSIMD_DSPR2)
+  if (have_dspr2(simd_support) || have_msa(simd_support))
     return 1;
 
   return 0;
@@ -173,6 +185,17 @@ jsimd_can_ycc_rgb(void)
 GLOBAL(int)
 jsimd_can_ycc_rgb565(void)
 {
+  init_simd();
+
+  /* The code is optimised for these values only */
+  if (BITS_IN_JSAMPLE != 8)
+    return 0;
+  if (sizeof(JDIMENSION) != 4)
+    return 0;
+
+  if (have_msa(simd_support))
+    return 1;
+
   return 0;
 }
 
@@ -187,7 +210,7 @@ jsimd_c_can_null_convert(void)
   if (sizeof(JDIMENSION) != 4)
     return 0;
 
-  if (simd_support & JSIMD_DSPR2)
+  if (have_dspr2(simd_support))
     return 1;
 
   return 0;
@@ -198,37 +221,70 @@ jsimd_rgb_ycc_convert(j_compress_ptr cinfo, JSAMPARRAY input_buf,
                       JSAMPIMAGE output_buf, JDIMENSION output_row,
                       int num_rows)
 {
-  void (*dspr2fct) (JDIMENSION, JSAMPARRAY, JSAMPIMAGE, JDIMENSION, int);
+  if (have_msa(simd_support)) {
+    void (*msafct) (JDIMENSION, JSAMPARRAY, JSAMPIMAGE, JDIMENSION, int);
+    switch (cinfo->in_color_space) {
+    case JCS_EXT_RGB:
+      msafct = jsimd_extrgb_ycc_convert_msa;
+      break;
+    case JCS_EXT_RGBX:
+    case JCS_EXT_RGBA:
+      msafct = jsimd_extrgbx_ycc_convert_msa;
+      break;
+    case JCS_EXT_BGR:
+      msafct = jsimd_extbgr_ycc_convert_msa;
+      break;
+    case JCS_EXT_BGRX:
+    case JCS_EXT_BGRA:
+      msafct = jsimd_extbgrx_ycc_convert_msa;
+      break;
+    case JCS_EXT_XBGR:
+    case JCS_EXT_ABGR:
+      msafct = jsimd_extxbgr_ycc_convert_msa;
+      break;
+    case JCS_EXT_XRGB:
+    case JCS_EXT_ARGB:
+      msafct = jsimd_extxrgb_ycc_convert_msa;
+      break;
+    default:
+      msafct = jsimd_extrgb_ycc_convert_msa;
+      break;
+    }
 
-  switch (cinfo->in_color_space) {
-  case JCS_EXT_RGB:
-    dspr2fct = jsimd_extrgb_ycc_convert_dspr2;
-    break;
-  case JCS_EXT_RGBX:
-  case JCS_EXT_RGBA:
-    dspr2fct = jsimd_extrgbx_ycc_convert_dspr2;
-    break;
-  case JCS_EXT_BGR:
-    dspr2fct = jsimd_extbgr_ycc_convert_dspr2;
-    break;
-  case JCS_EXT_BGRX:
-  case JCS_EXT_BGRA:
-    dspr2fct = jsimd_extbgrx_ycc_convert_dspr2;
-    break;
-  case JCS_EXT_XBGR:
-  case JCS_EXT_ABGR:
-    dspr2fct = jsimd_extxbgr_ycc_convert_dspr2;
-    break;
-  case JCS_EXT_XRGB:
-  case JCS_EXT_ARGB:
-    dspr2fct = jsimd_extxrgb_ycc_convert_dspr2;
-    break;
-  default:
-    dspr2fct = jsimd_extrgb_ycc_convert_dspr2;
-    break;
+    msafct(cinfo->image_width, input_buf, output_buf, output_row, num_rows);
+  } else if (have_dspr2(simd_support)) {
+    void (*dspr2fct) (JDIMENSION, JSAMPARRAY, JSAMPIMAGE, JDIMENSION, int);
+
+    switch (cinfo->in_color_space) {
+    case JCS_EXT_RGB:
+      dspr2fct = jsimd_extrgb_ycc_convert_dspr2;
+      break;
+    case JCS_EXT_RGBX:
+    case JCS_EXT_RGBA:
+      dspr2fct = jsimd_extrgbx_ycc_convert_dspr2;
+      break;
+    case JCS_EXT_BGR:
+      dspr2fct = jsimd_extbgr_ycc_convert_dspr2;
+      break;
+    case JCS_EXT_BGRX:
+    case JCS_EXT_BGRA:
+      dspr2fct = jsimd_extbgrx_ycc_convert_dspr2;
+      break;
+    case JCS_EXT_XBGR:
+    case JCS_EXT_ABGR:
+      dspr2fct = jsimd_extxbgr_ycc_convert_dspr2;
+      break;
+    case JCS_EXT_XRGB:
+    case JCS_EXT_ARGB:
+      dspr2fct = jsimd_extxrgb_ycc_convert_dspr2;
+      break;
+    default:
+      dspr2fct = jsimd_extrgb_ycc_convert_dspr2;
+      break;
+    }
+
+    dspr2fct(cinfo->image_width, input_buf, output_buf, output_row, num_rows);
   }
-
-  dspr2fct(cinfo->image_width, input_buf, output_buf, output_row, num_rows);
 }
 
 GLOBAL(void)
@@ -236,37 +292,71 @@ jsimd_rgb_gray_convert(j_compress_ptr cinfo, JSAMPARRAY input_buf,
                        JSAMPIMAGE output_buf, JDIMENSION output_row,
                        int num_rows)
 {
-  void (*dspr2fct) (JDIMENSION, JSAMPARRAY, JSAMPIMAGE, JDIMENSION, int);
+  if (have_msa(simd_support)) {
+    void (*msafct) (JDIMENSION, JSAMPARRAY, JSAMPIMAGE, JDIMENSION, int);
 
-  switch (cinfo->in_color_space) {
-  case JCS_EXT_RGB:
-    dspr2fct = jsimd_extrgb_gray_convert_dspr2;
-    break;
-  case JCS_EXT_RGBX:
-  case JCS_EXT_RGBA:
-    dspr2fct = jsimd_extrgbx_gray_convert_dspr2;
-    break;
-  case JCS_EXT_BGR:
-    dspr2fct = jsimd_extbgr_gray_convert_dspr2;
-    break;
-  case JCS_EXT_BGRX:
-  case JCS_EXT_BGRA:
-    dspr2fct = jsimd_extbgrx_gray_convert_dspr2;
-    break;
-  case JCS_EXT_XBGR:
-  case JCS_EXT_ABGR:
-    dspr2fct = jsimd_extxbgr_gray_convert_dspr2;
-    break;
-  case JCS_EXT_XRGB:
-  case JCS_EXT_ARGB:
-    dspr2fct = jsimd_extxrgb_gray_convert_dspr2;
-    break;
-  default:
-    dspr2fct = jsimd_extrgb_gray_convert_dspr2;
-    break;
+    switch (cinfo->in_color_space) {
+    case JCS_EXT_RGB:
+      msafct = jsimd_extrgb_gray_convert_msa;
+      break;
+    case JCS_EXT_RGBX:
+    case JCS_EXT_RGBA:
+      msafct = jsimd_extrgbx_gray_convert_msa;
+      break;
+    case JCS_EXT_BGR:
+      msafct = jsimd_extbgr_gray_convert_msa;
+      break;
+    case JCS_EXT_BGRX:
+    case JCS_EXT_BGRA:
+      msafct = jsimd_extbgrx_gray_convert_msa;
+      break;
+    case JCS_EXT_XBGR:
+    case JCS_EXT_ABGR:
+      msafct = jsimd_extxbgr_gray_convert_msa;
+      break;
+    case JCS_EXT_XRGB:
+    case JCS_EXT_ARGB:
+      msafct = jsimd_extxrgb_gray_convert_msa;
+      break;
+    default:
+      msafct = jsimd_extrgb_gray_convert_msa;
+      break;
+    }
+
+    msafct(cinfo->image_width, input_buf, output_buf, output_row, num_rows);
+  } else if (have_dspr2(simd_support)) {
+    void (*dspr2fct) (JDIMENSION, JSAMPARRAY, JSAMPIMAGE, JDIMENSION, int);
+
+    switch (cinfo->in_color_space) {
+    case JCS_EXT_RGB:
+      dspr2fct = jsimd_extrgb_gray_convert_dspr2;
+      break;
+    case JCS_EXT_RGBX:
+    case JCS_EXT_RGBA:
+      dspr2fct = jsimd_extrgbx_gray_convert_dspr2;
+      break;
+    case JCS_EXT_BGR:
+      dspr2fct = jsimd_extbgr_gray_convert_dspr2;
+      break;
+    case JCS_EXT_BGRX:
+    case JCS_EXT_BGRA:
+      dspr2fct = jsimd_extbgrx_gray_convert_dspr2;
+      break;
+    case JCS_EXT_XBGR:
+    case JCS_EXT_ABGR:
+      dspr2fct = jsimd_extxbgr_gray_convert_dspr2;
+      break;
+    case JCS_EXT_XRGB:
+    case JCS_EXT_ARGB:
+      dspr2fct = jsimd_extxrgb_gray_convert_dspr2;
+      break;
+    default:
+      dspr2fct = jsimd_extrgb_gray_convert_dspr2;
+      break;
+    }
+
+    dspr2fct(cinfo->image_width, input_buf, output_buf, output_row, num_rows);
   }
-
-  dspr2fct(cinfo->image_width, input_buf, output_buf, output_row, num_rows);
 }
 
 GLOBAL(void)
@@ -274,37 +364,72 @@ jsimd_ycc_rgb_convert(j_decompress_ptr cinfo, JSAMPIMAGE input_buf,
                       JDIMENSION input_row, JSAMPARRAY output_buf,
                       int num_rows)
 {
-  void (*dspr2fct) (JDIMENSION, JSAMPIMAGE, JDIMENSION, JSAMPARRAY, int);
+  if (have_msa(simd_support)) {
+    void (*msafct) (JDIMENSION, JSAMPIMAGE, JDIMENSION, JSAMPARRAY, int);
 
-  switch (cinfo->out_color_space) {
-  case JCS_EXT_RGB:
-    dspr2fct = jsimd_ycc_extrgb_convert_dspr2;
-    break;
-  case JCS_EXT_RGBX:
-  case JCS_EXT_RGBA:
-    dspr2fct = jsimd_ycc_extrgbx_convert_dspr2;
-    break;
-  case JCS_EXT_BGR:
-    dspr2fct = jsimd_ycc_extbgr_convert_dspr2;
-    break;
-  case JCS_EXT_BGRX:
-  case JCS_EXT_BGRA:
-    dspr2fct = jsimd_ycc_extbgrx_convert_dspr2;
-    break;
-  case JCS_EXT_XBGR:
-  case JCS_EXT_ABGR:
-    dspr2fct = jsimd_ycc_extxbgr_convert_dspr2;
-    break;
-  case JCS_EXT_XRGB:
-  case JCS_EXT_ARGB:
-    dspr2fct = jsimd_ycc_extxrgb_convert_dspr2;
-    break;
-  default:
-    dspr2fct = jsimd_ycc_extrgb_convert_dspr2;
-    break;
+    switch (cinfo->out_color_space) {
+    case JCS_EXT_RGB:
+      msafct = jsimd_ycc_extrgb_convert_msa;
+      break;
+    case JCS_EXT_RGBX:
+    case JCS_EXT_RGBA:
+      msafct = jsimd_ycc_extrgbx_convert_msa;
+      break;
+    case JCS_EXT_BGR:
+      msafct = jsimd_ycc_extbgr_convert_msa;
+      break;
+    case JCS_EXT_BGRX:
+    case JCS_EXT_BGRA:
+      msafct = jsimd_ycc_extbgrx_convert_msa;
+      break;
+    case JCS_EXT_XBGR:
+    case JCS_EXT_ABGR:
+      msafct = jsimd_ycc_extxbgr_convert_msa;
+      break;
+    case JCS_EXT_XRGB:
+    case JCS_EXT_ARGB:
+      msafct = jsimd_ycc_extxrgb_convert_msa;
+      break;
+    default:
+      msafct = jsimd_ycc_extrgb_convert_msa;
+      break;
+    }
+
+    msafct(cinfo->output_width, input_buf, input_row, output_buf,
+             num_rows);
+  } else if (have_dspr2(simd_support)) {
+    void (*dspr2fct) (JDIMENSION, JSAMPARRAY, JSAMPIMAGE, JDIMENSION, int);
+
+    switch (cinfo->out_color_space) {
+    case JCS_EXT_RGB:
+      dspr2fct = jsimd_ycc_extrgb_convert_dspr2;
+      break;
+    case JCS_EXT_RGBX:
+    case JCS_EXT_RGBA:
+      dspr2fct = jsimd_ycc_extrgbx_convert_dspr2;
+      break;
+    case JCS_EXT_BGR:
+      dspr2fct = jsimd_ycc_extbgr_convert_dspr2;
+      break;
+    case JCS_EXT_BGRX:
+    case JCS_EXT_BGRA:
+      dspr2fct = jsimd_ycc_extbgrx_convert_dspr2;
+      break;
+    case JCS_EXT_XBGR:
+    case JCS_EXT_ABGR:
+      dspr2fct = jsimd_ycc_extxbgr_convert_dspr2;
+      break;
+    case JCS_EXT_XRGB:
+    case JCS_EXT_ARGB:
+      dspr2fct = jsimd_ycc_extxrgb_convert_dspr2;
+      break;
+    default:
+      dspr2fct = jsimd_ycc_extrgb_convert_dspr2;
+      break;
+    }
+
+    dspr2fct(cinfo->image_width, input_buf, output_buf, output_buf, num_rows);
   }
-
-  dspr2fct(cinfo->output_width, input_buf, input_row, output_buf, num_rows);
 }
 
 GLOBAL(void)
@@ -312,6 +437,8 @@ jsimd_ycc_rgb565_convert(j_decompress_ptr cinfo, JSAMPIMAGE input_buf,
                          JDIMENSION input_row, JSAMPARRAY output_buf,
                          int num_rows)
 {
+  jsimd_ycc_rgb565_convert_msa(cinfo->output_width, input_buf, input_row,
+                               output_buf, num_rows);
 }
 
 GLOBAL(void)
@@ -333,14 +460,15 @@ jsimd_can_h2v2_downsample(void)
     return 0;
   if (sizeof(JDIMENSION) != 4)
     return 0;
-
   /* FIXME: jsimd_h2v2_downsample_dspr2() fails some of the TJBench tiling
-   * regression tests, probably because the DSPr2 SIMD implementation predates
+   * regression tests, probably because the DSPr2 SIMD implementation predates		
    * those tests. */
 #if 0
-  if (simd_support & JSIMD_DSPR2)
+  if (have_dspr2(simd_support))
     return 1;
 #endif
+  if (have_msa(simd_support))
+    return 1;
 
   return 0;
 }
@@ -358,7 +486,7 @@ jsimd_can_h2v2_smooth_downsample(void)
   if (DCTSIZE != 8)
     return 0;
 
-  if (simd_support & JSIMD_DSPR2)
+  if (have_dspr2(simd_support))
     return 1;
 
   return 0;
@@ -374,14 +502,15 @@ jsimd_can_h2v1_downsample(void)
     return 0;
   if (sizeof(JDIMENSION) != 4)
     return 0;
-
-  /* FIXME: jsimd_h2v1_downsample_dspr2() fails some of the TJBench tiling
-   * regression tests, probably because the DSPr2 SIMD implementation predates
+  /* FIXME: jsimd_h2v2_downsample_dspr2() fails some of the TJBench tiling
+   * regression tests, probably because the DSPr2 SIMD implementation predates		
    * those tests. */
 #if 0
-  if (simd_support & JSIMD_DSPR2)
+  if (have_dspr2(simd_support))
     return 1;
 #endif
+  if (have_msa(simd_support))
+    return 1;
 
   return 0;
 }
@@ -390,9 +519,18 @@ GLOBAL(void)
 jsimd_h2v2_downsample(j_compress_ptr cinfo, jpeg_component_info *compptr,
                       JSAMPARRAY input_data, JSAMPARRAY output_data)
 {
-  jsimd_h2v2_downsample_dspr2(cinfo->image_width, cinfo->max_v_samp_factor,
+  if (have_msa(simd_support)) {
+    jsimd_h2v2_downsample_msa(cinfo->image_width, cinfo->max_v_samp_factor,
                               compptr->v_samp_factor, compptr->width_in_blocks,
                               input_data, output_data);
+  }
+#if 0
+  if (have_dspr2(simd_support)) {
+    jsimd_h2v2_downsample_dspr2(cinfo->image_width, cinfo->max_v_samp_factor,
+                                compptr->v_samp_factor, compptr->width_in_blocks,
+                                input_data, output_data);
+  }
+#endif
 }
 
 GLOBAL(void)
@@ -412,9 +550,18 @@ GLOBAL(void)
 jsimd_h2v1_downsample(j_compress_ptr cinfo, jpeg_component_info *compptr,
                       JSAMPARRAY input_data, JSAMPARRAY output_data)
 {
-  jsimd_h2v1_downsample_dspr2(cinfo->image_width, cinfo->max_v_samp_factor,
+  if (have_msa(simd_support)) {
+    jsimd_h2v1_downsample_msa(cinfo->image_width, cinfo->max_v_samp_factor,
                               compptr->v_samp_factor, compptr->width_in_blocks,
                               input_data, output_data);
+  }
+#if 0
+  if (have_dspr2(simd_support)) {
+    jsimd_h2v1_downsample_dspr2(cinfo->image_width, cinfo->max_v_samp_factor,
+                                compptr->v_samp_factor, compptr->width_in_blocks,
+                                input_data, output_data);
+  }
+#endif
 }
 
 GLOBAL(int)
@@ -428,7 +575,7 @@ jsimd_can_h2v2_upsample(void)
   if (sizeof(JDIMENSION) != 4)
     return 0;
 
-  if (simd_support & JSIMD_DSPR2)
+  if (have_dspr2(simd_support))
     return 1;
 
   return 0;
@@ -446,7 +593,7 @@ jsimd_can_h2v1_upsample(void)
     return 0;
 
 #if defined(__MIPSEL__)
-  if (simd_support & JSIMD_DSPR2)
+  if (have_dspr2(simd_support) || have_msa(simd_support))
     return 1;
 #endif
 
@@ -464,7 +611,7 @@ jsimd_can_int_upsample(void)
   if (sizeof(JDIMENSION) != 4)
     return 0;
 
-  if (simd_support & JSIMD_DSPR2)
+  if (have_dspr2(simd_support))
     return 1;
 
   return 0;
@@ -482,8 +629,13 @@ GLOBAL(void)
 jsimd_h2v1_upsample(j_decompress_ptr cinfo, jpeg_component_info *compptr,
                     JSAMPARRAY input_data, JSAMPARRAY *output_data_ptr)
 {
-  jsimd_h2v1_upsample_dspr2(cinfo->max_v_samp_factor, cinfo->output_width,
+  if (have_msa(simd_support)) {
+    jsimd_h2v1_upsample_msa(cinfo->max_v_samp_factor, cinfo->output_width,
                             input_data, output_data_ptr);
+  } else if (have_dspr2(simd_support)) {
+    jsimd_h2v1_upsample_dspr2(cinfo->max_v_samp_factor, cinfo->output_width,
+                              input_data, output_data_ptr);
+  }
 }
 
 GLOBAL(void)
@@ -510,7 +662,7 @@ jsimd_can_h2v2_fancy_upsample(void)
     return 0;
 
 #if defined(__MIPSEL__)
-  if (simd_support & JSIMD_DSPR2)
+  if (have_dspr2(simd_support) || have_msa(simd_support))
     return 1;
 #endif
 
@@ -529,7 +681,7 @@ jsimd_can_h2v1_fancy_upsample(void)
     return 0;
 
 #if defined(__MIPSEL__)
-  if (simd_support & JSIMD_DSPR2)
+  if (have_dspr2(simd_support) || have_msa(simd_support))
     return 1;
 #endif
 
@@ -540,18 +692,30 @@ GLOBAL(void)
 jsimd_h2v2_fancy_upsample(j_decompress_ptr cinfo, jpeg_component_info *compptr,
                           JSAMPARRAY input_data, JSAMPARRAY *output_data_ptr)
 {
-  jsimd_h2v2_fancy_upsample_dspr2(cinfo->max_v_samp_factor,
+  if (have_msa(simd_support)) {
+    jsimd_h2v2_fancy_upsample_msa(cinfo->max_v_samp_factor,
                                   compptr->downsampled_width, input_data,
                                   output_data_ptr);
+  } else if (have_dspr2(simd_support)) {
+    jsimd_h2v2_fancy_upsample_dspr2(cinfo->max_v_samp_factor,
+                                    compptr->downsampled_width,
+                                    input_data, output_data_ptr);
+  }
 }
 
 GLOBAL(void)
 jsimd_h2v1_fancy_upsample(j_decompress_ptr cinfo, jpeg_component_info *compptr,
                           JSAMPARRAY input_data, JSAMPARRAY *output_data_ptr)
 {
-  jsimd_h2v1_fancy_upsample_dspr2(cinfo->max_v_samp_factor,
+  if (have_msa(simd_support)) {
+    jsimd_h2v1_fancy_upsample_msa(cinfo->max_v_samp_factor,
                                   compptr->downsampled_width, input_data,
                                   output_data_ptr);
+  } else if (have_dspr2(simd_support)) {
+    jsimd_h2v1_fancy_upsample_dspr2(cinfo->max_v_samp_factor,
+                                    compptr->downsampled_width,
+                                    input_data, output_data_ptr);
+  }
 }
 
 GLOBAL(int)
@@ -565,7 +729,7 @@ jsimd_can_h2v2_merged_upsample(void)
   if (sizeof(JDIMENSION) != 4)
     return 0;
 
-  if (simd_support & JSIMD_DSPR2)
+  if (have_dspr2(simd_support) || have_msa(simd_support))
     return 1;
 
   return 0;
@@ -582,7 +746,7 @@ jsimd_can_h2v1_merged_upsample(void)
   if (sizeof(JDIMENSION) != 4)
     return 0;
 
-  if (simd_support & JSIMD_DSPR2)
+  if (have_dspr2(simd_support) || have_msa(simd_support))
     return 1;
 
   return 0;
@@ -592,76 +756,143 @@ GLOBAL(void)
 jsimd_h2v2_merged_upsample(j_decompress_ptr cinfo, JSAMPIMAGE input_buf,
                            JDIMENSION in_row_group_ctr, JSAMPARRAY output_buf)
 {
-  void (*dspr2fct) (JDIMENSION, JSAMPIMAGE, JDIMENSION, JSAMPARRAY, JSAMPLE *);
+  if (have_msa(simd_support)) {
+    void (*msafct) (JDIMENSION, JSAMPIMAGE, JDIMENSION, JSAMPARRAY);
 
-  switch (cinfo->out_color_space) {
-  case JCS_EXT_RGB:
-    dspr2fct = jsimd_h2v2_extrgb_merged_upsample_dspr2;
-    break;
-  case JCS_EXT_RGBX:
-  case JCS_EXT_RGBA:
-    dspr2fct = jsimd_h2v2_extrgbx_merged_upsample_dspr2;
-    break;
-  case JCS_EXT_BGR:
-    dspr2fct = jsimd_h2v2_extbgr_merged_upsample_dspr2;
-    break;
-  case JCS_EXT_BGRX:
-  case JCS_EXT_BGRA:
-    dspr2fct = jsimd_h2v2_extbgrx_merged_upsample_dspr2;
-    break;
-  case JCS_EXT_XBGR:
-  case JCS_EXT_ABGR:
-    dspr2fct = jsimd_h2v2_extxbgr_merged_upsample_dspr2;
-    break;
-  case JCS_EXT_XRGB:
-  case JCS_EXT_ARGB:
-    dspr2fct = jsimd_h2v2_extxrgb_merged_upsample_dspr2;
-    break;
-  default:
-    dspr2fct = jsimd_h2v2_extrgb_merged_upsample_dspr2;
-    break;
+    switch (cinfo->out_color_space) {
+    case JCS_EXT_RGB:
+      msafct = jsimd_h2v2_extrgb_merged_upsample_msa;
+      break;
+    case JCS_EXT_RGBX:
+    case JCS_EXT_RGBA:
+      msafct = jsimd_h2v2_extrgbx_merged_upsample_msa;
+      break;
+    case JCS_EXT_BGR:
+      msafct = jsimd_h2v2_extbgr_merged_upsample_msa;
+      break;
+    case JCS_EXT_BGRX:
+    case JCS_EXT_BGRA:
+      msafct = jsimd_h2v2_extbgrx_merged_upsample_msa;
+      break;
+    case JCS_EXT_XBGR:
+    case JCS_EXT_ABGR:
+      msafct = jsimd_h2v2_extxbgr_merged_upsample_msa;
+      break;
+    case JCS_EXT_XRGB:
+    case JCS_EXT_ARGB:
+      msafct = jsimd_h2v2_extxrgb_merged_upsample_msa;
+      break;
+    default:
+      msafct = jsimd_h2v2_extrgb_merged_upsample_msa;
+      break;
+    }
+    msafct(cinfo->output_width, input_buf, in_row_group_ctr, output_buf);
+  } else if (have_dspr2(simd_support)) {
+    void (*dspr2fct) (JDIMENSION, JSAMPIMAGE, JDIMENSION, JSAMPARRAY, JSAMPLE *);
+
+    switch (cinfo->out_color_space) {
+    case JCS_EXT_RGB:
+      dspr2fct = jsimd_h2v2_extrgb_merged_upsample_dspr2;
+      break;
+    case JCS_EXT_RGBX:
+    case JCS_EXT_RGBA:
+      dspr2fct = jsimd_h2v2_extrgbx_merged_upsample_dspr2;
+      break;
+    case JCS_EXT_BGR:
+      dspr2fct = jsimd_h2v2_extbgr_merged_upsample_dspr2;
+      break;
+    case JCS_EXT_BGRX:
+    case JCS_EXT_BGRA:
+      dspr2fct = jsimd_h2v2_extbgrx_merged_upsample_dspr2;
+      break;
+    case JCS_EXT_XBGR:
+    case JCS_EXT_ABGR:
+      dspr2fct = jsimd_h2v2_extxbgr_merged_upsample_dspr2;
+      break;
+    case JCS_EXT_XRGB:
+    case JCS_EXT_ARGB:
+      dspr2fct = jsimd_h2v2_extxrgb_merged_upsample_dspr2;
+      break;
+    default:
+      dspr2fct = jsimd_h2v2_extrgb_merged_upsample_dspr2;
+      break;
+    }
+
+    dspr2fct(cinfo->output_width, input_buf, in_row_group_ctr, output_buf,
+             cinfo->sample_range_limit);
   }
-
-  dspr2fct(cinfo->output_width, input_buf, in_row_group_ctr, output_buf,
-           cinfo->sample_range_limit);
 }
 
 GLOBAL(void)
 jsimd_h2v1_merged_upsample(j_decompress_ptr cinfo, JSAMPIMAGE input_buf,
                            JDIMENSION in_row_group_ctr, JSAMPARRAY output_buf)
 {
-  void (*dspr2fct) (JDIMENSION, JSAMPIMAGE, JDIMENSION, JSAMPARRAY, JSAMPLE *);
+  if (have_msa(simd_support)) {
+    void (*msafct) (JDIMENSION, JSAMPIMAGE, JDIMENSION, JSAMPARRAY);
 
-  switch (cinfo->out_color_space) {
-  case JCS_EXT_RGB:
-    dspr2fct = jsimd_h2v1_extrgb_merged_upsample_dspr2;
-    break;
-  case JCS_EXT_RGBX:
-  case JCS_EXT_RGBA:
-    dspr2fct = jsimd_h2v1_extrgbx_merged_upsample_dspr2;
-    break;
-  case JCS_EXT_BGR:
-    dspr2fct = jsimd_h2v1_extbgr_merged_upsample_dspr2;
-    break;
-  case JCS_EXT_BGRX:
-  case JCS_EXT_BGRA:
-    dspr2fct = jsimd_h2v1_extbgrx_merged_upsample_dspr2;
-    break;
-  case JCS_EXT_XBGR:
-  case JCS_EXT_ABGR:
-    dspr2fct = jsimd_h2v1_extxbgr_merged_upsample_dspr2;
-    break;
-  case JCS_EXT_XRGB:
-  case JCS_EXT_ARGB:
-    dspr2fct = jsimd_h2v1_extxrgb_merged_upsample_dspr2;
-    break;
-  default:
-    dspr2fct = jsimd_h2v1_extrgb_merged_upsample_dspr2;
-    break;
+    switch (cinfo->out_color_space) {
+    case JCS_EXT_RGB:
+      msafct = jsimd_h2v1_extrgb_merged_upsample_msa;
+      break;
+    case JCS_EXT_RGBX:
+    case JCS_EXT_RGBA:
+      msafct = jsimd_h2v1_extrgbx_merged_upsample_msa;
+      break;
+    case JCS_EXT_BGR:
+      msafct = jsimd_h2v1_extbgr_merged_upsample_msa;
+      break;
+    case JCS_EXT_BGRX:
+    case JCS_EXT_BGRA:
+      msafct = jsimd_h2v1_extbgrx_merged_upsample_msa;
+      break;
+    case JCS_EXT_XBGR:
+    case JCS_EXT_ABGR:
+      msafct = jsimd_h2v1_extxbgr_merged_upsample_msa;
+      break;
+    case JCS_EXT_XRGB:
+    case JCS_EXT_ARGB:
+      msafct = jsimd_h2v1_extxrgb_merged_upsample_msa;
+      break;
+    default:
+      msafct = jsimd_h2v1_extrgb_merged_upsample_msa;
+      break;
+    }
+
+    msafct(cinfo->output_width, input_buf, in_row_group_ctr, output_buf);
+  } else if (have_dspr2(simd_support)) { 
+    void (*dspr2fct) (JDIMENSION, JSAMPIMAGE, JDIMENSION, JSAMPARRAY, JSAMPLE *);
+
+    switch (cinfo->out_color_space) {
+    case JCS_EXT_RGB:
+      dspr2fct = jsimd_h2v1_extrgb_merged_upsample_dspr2;
+      break;
+    case JCS_EXT_RGBX:
+    case JCS_EXT_RGBA:
+      dspr2fct = jsimd_h2v1_extrgbx_merged_upsample_dspr2;
+      break;
+    case JCS_EXT_BGR:
+      dspr2fct = jsimd_h2v1_extbgr_merged_upsample_dspr2;
+      break;
+    case JCS_EXT_BGRX:
+    case JCS_EXT_BGRA:
+      dspr2fct = jsimd_h2v1_extbgrx_merged_upsample_dspr2;
+      break;
+    case JCS_EXT_XBGR:
+    case JCS_EXT_ABGR:
+      dspr2fct = jsimd_h2v1_extxbgr_merged_upsample_dspr2;
+      break;
+    case JCS_EXT_XRGB:
+    case JCS_EXT_ARGB:
+      dspr2fct = jsimd_h2v1_extxrgb_merged_upsample_dspr2;
+      break;
+    default:
+      dspr2fct = jsimd_h2v1_extrgb_merged_upsample_dspr2;
+      break;
+    }
+
+    dspr2fct(cinfo->output_width, input_buf, in_row_group_ctr, output_buf,
+             cinfo->sample_range_limit);
   }
-
-  dspr2fct(cinfo->output_width, input_buf, in_row_group_ctr, output_buf,
-           cinfo->sample_range_limit);
 }
 
 GLOBAL(int)
@@ -680,7 +911,7 @@ jsimd_can_convsamp(void)
     return 0;
 
 #if defined(__MIPSEL__)
-  if (simd_support & JSIMD_DSPR2)
+  if (have_dspr2(simd_support) || have_msa(simd_support))
     return 1;
 #endif
 
@@ -705,7 +936,7 @@ jsimd_can_convsamp_float(void)
     return 0;
 
 #ifndef __mips_soft_float
-  if (simd_support & JSIMD_DSPR2)
+  if (have_dspr2(simd_support))
     return 1;
 #endif
 
@@ -716,7 +947,11 @@ GLOBAL(void)
 jsimd_convsamp(JSAMPARRAY sample_data, JDIMENSION start_col,
                DCTELEM *workspace)
 {
-  jsimd_convsamp_dspr2(sample_data, start_col, workspace);
+  if (have_msa(simd_support)) {
+    jsimd_convsamp_msa(sample_data, start_col, workspace);
+  } else if (have_dspr2(simd_support)) {
+    jsimd_convsamp_dspr2(sample_data, start_col, workspace);
+  }
 }
 
 GLOBAL(void)
@@ -740,7 +975,7 @@ jsimd_can_fdct_islow(void)
     return 0;
 
 #if defined(__MIPSEL__)
-  if (simd_support & JSIMD_DSPR2)
+  if (have_dspr2(simd_support) || have_msa(simd_support))
     return 1;
 #endif
 
@@ -759,7 +994,7 @@ jsimd_can_fdct_ifast(void)
     return 0;
 
 #if defined(__MIPSEL__)
-  if (simd_support & JSIMD_DSPR2)
+  if (have_dspr2(simd_support) || have_msa(simd_support))
     return 1;
 #endif
 
@@ -775,13 +1010,21 @@ jsimd_can_fdct_float(void)
 GLOBAL(void)
 jsimd_fdct_islow(DCTELEM *data)
 {
-  jsimd_fdct_islow_dspr2(data);
+  if (have_msa(simd_support)) {
+    jsimd_fdct_islow_msa(data);
+  } else if (have_dspr2(simd_support)) {
+    jsimd_fdct_islow_dspr2(data);
+  }
 }
 
 GLOBAL(void)
 jsimd_fdct_ifast(DCTELEM *data)
 {
-  jsimd_fdct_ifast_dspr2(data);
+  if (have_msa(simd_support)) {
+    jsimd_fdct_ifast_msa(data);
+  } else if (have_dspr2(simd_support)) {
+    jsimd_fdct_ifast_dspr2(data);
+  }
 }
 
 GLOBAL(void)
@@ -802,7 +1045,7 @@ jsimd_can_quantize(void)
   if (sizeof(DCTELEM) != 2)
     return 0;
 
-  if (simd_support & JSIMD_DSPR2)
+  if (have_dspr2(simd_support) || have_msa(simd_support))
     return 1;
 
   return 0;
@@ -826,7 +1069,7 @@ jsimd_can_quantize_float(void)
     return 0;
 
 #ifndef __mips_soft_float
-  if (simd_support & JSIMD_DSPR2)
+  if (have_dspr2(simd_support))
     return 1;
 #endif
 
@@ -836,7 +1079,11 @@ jsimd_can_quantize_float(void)
 GLOBAL(void)
 jsimd_quantize(JCOEFPTR coef_block, DCTELEM *divisors, DCTELEM *workspace)
 {
-  jsimd_quantize_dspr2(coef_block, divisors, workspace);
+  if(have_msa(simd_support)) {
+    jsimd_quantize_msa(coef_block, divisors, workspace);
+  } else if(have_dspr2(simd_support)) {
+    jsimd_quantize_dspr2(coef_block, divisors, workspace);
+  }
 }
 
 GLOBAL(void)
@@ -865,7 +1112,7 @@ jsimd_can_idct_2x2(void)
   if (sizeof(ISLOW_MULT_TYPE) != 2)
     return 0;
 
-  if (simd_support & JSIMD_DSPR2)
+  if (have_dspr2(simd_support) || have_msa(simd_support))
     return 1;
 
   return 0;
@@ -889,7 +1136,7 @@ jsimd_can_idct_4x4(void)
     return 0;
 
 #if defined(__MIPSEL__)
-  if (simd_support & JSIMD_DSPR2)
+  if (have_dspr2(simd_support) || have_msa(simd_support))
     return 1;
 #endif
 
@@ -913,7 +1160,7 @@ jsimd_can_idct_6x6(void)
   if (sizeof(ISLOW_MULT_TYPE) != 2)
     return 0;
 
-  if (simd_support & JSIMD_DSPR2)
+  if (have_dspr2(simd_support))
     return 1;
 
   return 0;
@@ -935,7 +1182,7 @@ jsimd_can_idct_12x12(void)
   if (sizeof(ISLOW_MULT_TYPE) != 2)
     return 0;
 
-  if (simd_support & JSIMD_DSPR2)
+  if (have_dspr2(simd_support))
     return 1;
 
   return 0;
@@ -946,7 +1193,16 @@ jsimd_idct_2x2(j_decompress_ptr cinfo, jpeg_component_info *compptr,
                JCOEFPTR coef_block, JSAMPARRAY output_buf,
                JDIMENSION output_col)
 {
-  jsimd_idct_2x2_dspr2(compptr->dct_table, coef_block, output_buf, output_col);
+  if (have_msa(simd_support)) {
+    unsigned char *output[2] = {
+      output_buf[0] + output_col,
+      output_buf[1] + output_col,
+    };
+
+    jsimd_idct_2x2_msa(cinfo, compptr, coef_block, output, output_col);
+  } else if (have_dspr2(simd_support)) {
+    jsimd_idct_2x2_dspr2(compptr->dct_table, coef_block, output_buf, output_col);
+  }
 }
 
 GLOBAL(void)
@@ -954,10 +1210,21 @@ jsimd_idct_4x4(j_decompress_ptr cinfo, jpeg_component_info *compptr,
                JCOEFPTR coef_block, JSAMPARRAY output_buf,
                JDIMENSION output_col)
 {
-  int workspace[DCTSIZE * 4]; /* buffers data between passes */
+  if (have_msa(simd_support)) {
+    unsigned char *output[4] = {
+      output_buf[0] + output_col,
+      output_buf[1] + output_col,
+      output_buf[2] + output_col,
+      output_buf[3] + output_col,
+    };
 
-  jsimd_idct_4x4_dspr2(compptr->dct_table, coef_block, output_buf, output_col,
-                       workspace);
+    jsimd_idct_4x4_msa(cinfo, compptr, coef_block, output, output_col);
+  } else if (have_dspr2(simd_support)) {
+    int workspace[DCTSIZE * 4]; /* buffers data between passes */
+
+    jsimd_idct_4x4_dspr2(compptr->dct_table, coef_block, output_buf, output_col,
+                         workspace);
+  }
 }
 
 GLOBAL(void)
@@ -1010,7 +1277,7 @@ jsimd_can_idct_islow(void)
   if (sizeof(ISLOW_MULT_TYPE) != 2)
     return 0;
 
-  if (simd_support & JSIMD_DSPR2)
+  if (have_dspr2(simd_support) || have_msa(simd_support))
     return 1;
 
   return 0;
@@ -1036,7 +1303,7 @@ jsimd_can_idct_ifast(void)
     return 0;
 
 #if defined(__MIPSEL__)
-  if (simd_support & JSIMD_DSPR2)
+  if (have_dspr2(simd_support) || have_msa(simd_support))
     return 1;
 #endif
 
@@ -1054,19 +1321,34 @@ jsimd_idct_islow(j_decompress_ptr cinfo, jpeg_component_info *compptr,
                  JCOEFPTR coef_block, JSAMPARRAY output_buf,
                  JDIMENSION output_col)
 {
-  int output[8] = {
-    (int)(output_buf[0] + output_col),
-    (int)(output_buf[1] + output_col),
-    (int)(output_buf[2] + output_col),
-    (int)(output_buf[3] + output_col),
-    (int)(output_buf[4] + output_col),
-    (int)(output_buf[5] + output_col),
-    (int)(output_buf[6] + output_col),
-    (int)(output_buf[7] + output_col)
-  };
+  if (have_msa(simd_support)) {
+    unsigned char *output[8] = {
+      output_buf[0] + output_col,
+      output_buf[1] + output_col,
+      output_buf[2] + output_col,
+      output_buf[3] + output_col,
+      output_buf[4] + output_col,
+      output_buf[5] + output_col,
+      output_buf[6] + output_col,
+      output_buf[7] + output_col,
+    };
 
-  jsimd_idct_islow_dspr2(coef_block, compptr->dct_table, output,
-                         IDCT_range_limit(cinfo));
+    jsimd_idct_islow_msa(cinfo, compptr, coef_block, output, output_col);
+  } else if (have_dspr2(simd_support)) {
+    int output[8] = {
+      (int)(output_buf[0] + output_col),
+      (int)(output_buf[1] + output_col),
+      (int)(output_buf[2] + output_col),
+      (int)(output_buf[3] + output_col),
+      (int)(output_buf[4] + output_col),
+      (int)(output_buf[5] + output_col),
+      (int)(output_buf[6] + output_col),
+      (int)(output_buf[7] + output_col)
+    };
+
+    jsimd_idct_islow_dspr2(coef_block, compptr->dct_table, output,
+                           IDCT_range_limit(cinfo));
+  }
 }
 
 GLOBAL(void)
@@ -1074,24 +1356,39 @@ jsimd_idct_ifast(j_decompress_ptr cinfo, jpeg_component_info *compptr,
                  JCOEFPTR coef_block, JSAMPARRAY output_buf,
                  JDIMENSION output_col)
 {
-  JCOEFPTR inptr;
-  IFAST_MULT_TYPE *quantptr;
-  DCTELEM workspace[DCTSIZE2];  /* buffers data between passes */
+  if (have_msa(simd_support)) {
+    unsigned char *output[8] = {
+      output_buf[0] + output_col,
+      output_buf[1] + output_col,
+      output_buf[2] + output_col,
+      output_buf[3] + output_col,
+      output_buf[4] + output_col,
+      output_buf[5] + output_col,
+      output_buf[6] + output_col,
+      output_buf[7] + output_col,
+    };
 
-  /* Pass 1: process columns from input, store into work array. */
+    jsimd_idct_ifast_msa(cinfo, compptr, coef_block, output, output_col);
+  } else if (have_dspr2(simd_support)) {
+    JCOEFPTR inptr;
+    IFAST_MULT_TYPE *quantptr;
+    DCTELEM workspace[DCTSIZE2];  /* buffers data between passes */
 
-  inptr = coef_block;
-  quantptr = (IFAST_MULT_TYPE *)compptr->dct_table;
+    /* Pass 1: process columns from input, store into work array. */
 
-  jsimd_idct_ifast_cols_dspr2(inptr, quantptr, workspace,
-                              mips_idct_ifast_coefs);
+    inptr = coef_block;
+    quantptr = (IFAST_MULT_TYPE *)compptr->dct_table;
 
-  /* Pass 2: process rows from work array, store into output array. */
-  /* Note that we must descale the results by a factor of 8 == 2**3, */
-  /* and also undo the PASS1_BITS scaling. */
+    jsimd_idct_ifast_cols_dspr2(inptr, quantptr, workspace,
+                                mips_idct_ifast_coefs);
 
-  jsimd_idct_ifast_rows_dspr2(workspace, output_buf, output_col,
-                              mips_idct_ifast_coefs);
+    /* Pass 2: process rows from work array, store into output array. */
+    /* Note that we must descale the results by a factor of 8 == 2**3, */
+    /* and also undo the PASS1_BITS scaling. */
+
+    jsimd_idct_ifast_rows_dspr2(workspace, output_buf, output_col,
+                                mips_idct_ifast_coefs);
+  }
 }
 
 GLOBAL(void)

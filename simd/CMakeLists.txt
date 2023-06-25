@@ -446,7 +446,29 @@ if(NOT HAVE_DSPR2 AND NOT HAVE_MSA)
   return()
 endif()
 
-add_library(simd OBJECT mips/jsimd_dspr2.S mips/jsimd.c)
+if(HAVE_DSPR2)
+  set(SIMD_SOURCES mips/jsimd_dspr2.S)
+
+foreach(file ${SIMD_SOURCES})
+  set_property(SOURCE ${file} APPEND_STRING PROPERTY COMPILE_FLAGS
+    " -mdspr2")
+endforeach()
+endif()
+
+if(HAVE_MSA)
+  set(SIMD_SOURCES ${SIMD_SOURCES} mips/jccolor_msa.c mips/jcgray_msa.c
+    mips/jcsample_msa.c mips/jdcol565_msa.c mips/jdcolor_msa.c
+    mips/jdmerge_msa.c mips/jdsample_msa.c mips/jfdctfst_msa.c
+    mips/jfdctint_msa.c mips/jidctfst_msa.c mips/jidctint_msa.c
+    mips/jidctred_msa.c mips/jquanti_msa.c)
+
+foreach(file ${SIMD_SOURCES})
+  set_property(SOURCE ${file} APPEND_STRING PROPERTY COMPILE_FLAGS
+    " -mmsa")
+endforeach()
+endif()
+
+add_library(simd OBJECT ${SIMD_SOURCES} mips/jsimd.c)
 
 if(CMAKE_POSITION_INDEPENDENT_CODE OR ENABLE_SHARED)
   set_target_properties(simd PROPERTIES POSITION_INDEPENDENT_CODE 1)
