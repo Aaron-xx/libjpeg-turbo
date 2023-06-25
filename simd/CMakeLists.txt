@@ -515,10 +515,30 @@ if(NOT HAVE_MMI AND NOT HAVE_MSA)
   return()
 endif()
 
-set(SIMD_SOURCES mips64/jccolor-mmi.c mips64/jcgray-mmi.c mips64/jcsample-mmi.c
-  mips64/jdcolor-mmi.c mips64/jdmerge-mmi.c mips64/jdsample-mmi.c
-  mips64/jfdctfst-mmi.c mips64/jfdctint-mmi.c mips64/jidctfst-mmi.c
-  mips64/jidctint-mmi.c mips64/jquanti-mmi.c)
+if(HAVE_MMI)
+  set(SIMD_SOURCES mips64/jccolor-mmi.c mips64/jcgray-mmi.c mips64/jcsample-mmi.c
+    mips64/jdcolor-mmi.c mips64/jdmerge-mmi.c mips64/jdsample-mmi.c
+    mips64/jfdctfst-mmi.c mips64/jfdctint-mmi.c mips64/jidctfst-mmi.c
+    mips64/jidctint-mmi.c mips64/jquanti-mmi.c)
+
+foreach(file ${SIMD_SOURCES})
+  set_property(SOURCE ${file} APPEND_STRING PROPERTY COMPILE_FLAGS
+    " -Wa,-mloongson-mmi,-mloongson-ext")
+endforeach()
+endif()
+
+if(HAVE_MSA)
+  set(SIMD_SOURCES ${SIMD_SOURCES} mips/jccolor_msa.c mips/jcgray_msa.c
+    mips/jcsample_msa.c mips/jdcol565_msa.c mips/jdcolor_msa.c
+    mips/jdmerge_msa.c mips/jdsample_msa.c mips/jfdctfst_msa.c
+    mips/jfdctint_msa.c mips/jidctfst_msa.c mips/jidctint_msa.c
+    mips/jidctred_msa.c mips/jquanti_msa.c)
+
+foreach(file ${SIMD_SOURCES})
+  set_property(SOURCE ${file} APPEND_STRING PROPERTY COMPILE_FLAGS
+    " -mmsa")
+endforeach()
+endif()
 
 if(CMAKE_COMPILER_IS_GNUCC)
   foreach(file ${SIMD_SOURCES})
@@ -526,10 +546,6 @@ if(CMAKE_COMPILER_IS_GNUCC)
       " -fno-strict-aliasing")
   endforeach()
 endif()
-foreach(file ${SIMD_SOURCES})
-  set_property(SOURCE ${file} APPEND_STRING PROPERTY COMPILE_FLAGS
-    " -Wa,-mloongson-mmi,-mloongson-ext")
-endforeach()
 
 add_library(simd OBJECT ${SIMD_SOURCES} mips64/jsimd.c)
 
