@@ -28,8 +28,8 @@
 
 static THREAD_LOCAL unsigned int simd_support = ~0;
 
-#define have_mmi(flags) (flags & JSIMD_MMI)
-#define have_msa(flags) (flags & JSIMD_MSA)
+#define have_mmi(flags)  (flags & JSIMD_MMI)
+#define have_msa(flags)  (flags & JSIMD_MSA)
 
 #if defined(__linux__)
 
@@ -777,8 +777,7 @@ jsimd_h2v1_merged_upsample(j_decompress_ptr cinfo, JSAMPIMAGE input_buf,
     }
 
     msafct(cinfo->output_width, input_buf, in_row_group_ctr, output_buf);
-  }
-  else if (have_mmi(simd_support)) {
+  } else if (have_mmi(simd_support)) {
     void (*mmifct) (JDIMENSION, JSAMPIMAGE, JDIMENSION, JSAMPARRAY);
 
     switch (cinfo->out_color_space) {

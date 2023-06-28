@@ -1149,4 +1149,3 @@ out0, out1, out2, out3, out4, out5, out6, out7) { \
 #define TRANSPOSE4x4_SW_SW(...)  TRANSPOSE4x4_W(v4i32, __VA_ARGS__)
 
 #endif /* __JMACROS_MSA_H__ */
-

@@ -27,8 +27,8 @@
 
 static THREAD_LOCAL unsigned int simd_support = ~0;
 
-#define have_dspr2(flags) (flags & JSIMD_DSPR2)
-#define have_msa(flags) (flags & JSIMD_MSA)
+#define have_dspr2(flags)  (flags & JSIMD_DSPR2)
+#define have_msa(flags)    (flags & JSIMD_MSA)
 
 #if !(defined(__mips_dsp) && (__mips_dsp_rev >= 2)) && !defined(__mips_msa) && defined(__linux__)
 
@@ -45,9 +45,9 @@ parse_proc_cpuinfo(const char *search_string)
     while (fgets(cpuinfo_line, sizeof(cpuinfo_line), f) != NULL) {
       if (strstr(cpuinfo_line, search_string) != NULL) {
         fclose(f);
-	if(!strcmp(search_string, "dsp2"))
+        if (!strcmp(search_string, "MIPS 74K"))
           simd_support |= JSIMD_DSPR2;
-	if(!strcmp(search_string, "msa"))
+        if (!strcmp(search_string, "msa"))
           simd_support |= JSIMD_MSA;
         return;
       }
@@ -82,7 +82,7 @@ init_simd(void)
   /* We still have a chance to use MIPS DSPR2 and MIPS_MSA regardless of globally used
    * -mdspr2 and -mmsa options passed to gcc by performing runtime detection via
    * /proc/cpuinfo parsing on linux */
-  parse_proc_cpuinfo("dsp2");
+  parse_proc_cpuinfo("MIPS 74K");
   parse_proc_cpuinfo("msa");
 #endif
 
@@ -461,7 +461,7 @@ jsimd_can_h2v2_downsample(void)
   if (sizeof(JDIMENSION) != 4)
     return 0;
   /* FIXME: jsimd_h2v2_downsample_dspr2() fails some of the TJBench tiling
-   * regression tests, probably because the DSPr2 SIMD implementation predates		
+   * regression tests, probably because the DSPr2 SIMD implementation predates
    * those tests. */
 #if 0
   if (have_dspr2(simd_support))
@@ -503,7 +503,7 @@ jsimd_can_h2v1_downsample(void)
   if (sizeof(JDIMENSION) != 4)
     return 0;
   /* FIXME: jsimd_h2v2_downsample_dspr2() fails some of the TJBench tiling
-   * regression tests, probably because the DSPr2 SIMD implementation predates		
+   * regression tests, probably because the DSPr2 SIMD implementation predates
    * those tests. */
 #if 0
   if (have_dspr2(simd_support))
@@ -859,7 +859,7 @@ jsimd_h2v1_merged_upsample(j_decompress_ptr cinfo, JSAMPIMAGE input_buf,
     }
 
     msafct(cinfo->output_width, input_buf, in_row_group_ctr, output_buf);
-  } else if (have_dspr2(simd_support)) { 
+  } else if (have_dspr2(simd_support)) {
     void (*dspr2fct) (JDIMENSION, JSAMPIMAGE, JDIMENSION, JSAMPARRAY, JSAMPLE *);
 
     switch (cinfo->out_color_space) {
@@ -1079,9 +1079,9 @@ jsimd_can_quantize_float(void)
 GLOBAL(void)
 jsimd_quantize(JCOEFPTR coef_block, DCTELEM *divisors, DCTELEM *workspace)
 {
-  if(have_msa(simd_support)) {
+  if (have_msa(simd_support)) {
     jsimd_quantize_msa(coef_block, divisors, workspace);
-  } else if(have_dspr2(simd_support)) {
+  } else if (have_dspr2(simd_support)) {
     jsimd_quantize_dspr2(coef_block, divisors, workspace);
   }
 }

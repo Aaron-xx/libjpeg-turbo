@@ -310,4 +310,3 @@ jsimd_h2v1_upsample_msa(int max_v_samp_factor,
     }
   }
 }
-

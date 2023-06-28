@@ -497,7 +497,7 @@ check_c_source_compiles("
   }" HAVE_MMI)
 
 unset(CMAKE_REQUIRED_FLAGS)
- 
+
 set(CMAKE_REQUIRED_FLAGS -mmsa)
 
 check_c_source_compiles("
